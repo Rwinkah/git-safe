@@ -223,6 +223,51 @@ pub fn export_personal(fpr: &str) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+// Called by the installer as the regular user, outside sudo.
+fn trust_own() -> Result<()> {
+    let output = Command::new("/usr/bin/gpg")
+        .args(["--no-options", "--batch", "--with-colons", "--list-secret-keys"])
+        .output()?;
+    if !output.status.success() {
+        return Err(error("cannot discover your GPG signing keys"));
+    }
+    let mut primary = false;
+    let mut count = 0;
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let fields: Vec<_> = line.split(':').collect();
+        match fields[0] {
+            "sec" => {
+                primary = !matches!(fields.get(1).copied(), Some("r" | "e" | "d" | "i"))
+                    && fields.get(11).is_some_and(|caps| caps.contains('S'));
+            }
+            "ssb" => primary = false,
+            "fpr" if primary => {
+                primary = false;
+                let fpr = fingerprint(fields.get(9).copied().unwrap_or(""))?;
+                let bytes = export_personal(&fpr)?;
+                let db = open_store()?;
+                let id = match db.query_row(
+                    "SELECT id FROM signers WHERE fingerprint=?1", [&fpr],
+                    |row| row.get::<_, String>(0),
+                ) {
+                    Ok(id) => id,
+                    Err(rusqlite::Error::QueryReturnedNoRows) => fpr.clone(),
+                    Err(err) => return Err(err.into()),
+                };
+                drop(db);
+                import_signer(&id, &bytes, Some(&fpr), true)?;
+                count += 1;
+            }
+            _ => {}
+        }
+    }
+    println!("Registered {count} own signing key(s).");
+    if count == 0 {
+        println!("No usable GPG signing keys found. After creating one, run: git-safe keys trust-own");
+    }
+    Ok(())
+}
+
 fn open_store() -> Result<Connection> {
     let dir = data_dir()?;
     private_dir(&dir)?;
@@ -395,7 +440,8 @@ pub fn run(args: &[OsString]) -> Result<()> {
         })
         .collect::<Result<_>>()?;
     match args.as_slice() {
-        [] | ["help"] | ["--help"] => println!("git-safe keys export --key PRIMARY_FINGERPRINT --output FILE\ngit-safe keys import ID FILE [--fingerprint FINGERPRINT] [--yes]\ngit-safe keys list\ngit-safe keys remove ID"),
+        [] | ["help"] | ["--help"] => println!("git-safe keys export --key PRIMARY_FINGERPRINT --output FILE\ngit-safe keys import ID FILE [--fingerprint FINGERPRINT] [--yes]\ngit-safe keys trust-own\ngit-safe keys list\ngit-safe keys remove ID"),
+        ["trust-own"] => trust_own()?,
         ["export", "--key", fpr, "--output", path] => {
             let bytes = export_personal(fpr)?;
             let mut out = OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)?;

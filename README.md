@@ -19,7 +19,12 @@ The script installs dependencies using sudo, builds a Debian package with a lock
 dependency graph, and installs it. This wraps system Git and sets system-wide
 Git hooks. Protected operations require a kernel with Landlock support and
 permission to create Bubblewrap user namespaces; restricted containers may
-prevent them. Installation does not grant trust to any signer.
+prevent them. The installer automatically registers usable signing keys from
+your private GPG keyring (`GNUPGHOME`, when set) in your trust store. Public-only
+keys are not automatically trusted. Existing signer names are preserved; only
+public key material is exported and stored. This also applies inside WSL.
+Direct `.deb` installation does not register per-user keys: run
+`git-safe keys trust-own` as your regular user afterward.
 
 On Windows, first set up a Debian/Ubuntu **WSL2** distribution and install
 Rust/Cargo inside it. From PowerShell in this checkout:
@@ -40,11 +45,12 @@ bash install-macos.sh
 Native macOS protection is not implemented. This script exits with an explanation
 and makes no changes. Use the Linux installer inside a Debian/Ubuntu VM instead.
 
-After installation, import and verify a signer's public key as described below.
+If you create a key later, run `git-safe keys trust-own` to register it.
+For other people's keys, import and verify their public key as described below.
 
 ## Trusted signers
 
-Trust is per operating-system user. The store starts empty and is created on
+Trust is per operating-system user. The store is created on
 first use at `$XDG_DATA_HOME/git-safe/trust.sqlite3`, or
 `~/.local/share/git-safe/trust.sqlite3` when XDG_DATA_HOME is unset. No package
 review key is automatically trusted, including on upgrades. Existing downloads

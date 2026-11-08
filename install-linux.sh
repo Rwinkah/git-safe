@@ -40,4 +40,5 @@ chmod 755 "$package_dir"
 chmod 644 "$package_dir/git-safe.deb"
 sudo apt-get install -y "$package_dir/git-safe.deb"
 git-safe --help
-echo "Installed. Trust a signer with: git-safe keys import NAME PUBLIC_KEY_FILE"
+/usr/bin/git-safe keys trust-own
+echo "Installed. Your own available GPG signing keys have been registered."
