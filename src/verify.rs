@@ -121,8 +121,13 @@ fn commits_covered_by_review(repo: &Path, commits: &[CommitStatus]) -> HashSet<S
 fn rev_parse(repo: &Path, spec: &str) -> Option<String> {
     let output = git_in(repo, &["rev-parse", "--verify", spec])
         .output()
-        .ok()?;
+        .unwrap_or_else(|err| real::die(&format!("cannot start sandboxed commit lookup: {err}")));
     if !output.status.success() {
+        eprintln!(
+            "git-safe: sandboxed commit lookup failed for {spec} ({}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
         return None;
     }
     let text = String::from_utf8_lossy(&output.stdout).trim().to_string();

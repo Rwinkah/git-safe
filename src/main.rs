@@ -27,6 +27,10 @@ fn invocation_name() -> String {
 fn main() {
     let name = invocation_name();
     let args: Vec<OsString> = env::args_os().skip(1).collect();
+    #[cfg(target_os = "linux")]
+    if name == "git-safe-sandbox" {
+        sandbox::run_restricted(&args);
+    }
     if name == "git-safe-gpg" {
         let mut command = std::process::Command::new("/usr/bin/gpg");
         command.args([

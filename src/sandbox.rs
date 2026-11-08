@@ -186,7 +186,8 @@ fn build_runtime() -> io::Result<Runtime> {
         (git.clone(), PathBuf::from("/usr/bin/git")),
         (git, PathBuf::from("/runtime/git-core/git-upload-pack")),
         (PathBuf::from("/usr/bin/gpg"), PathBuf::from("/usr/bin/gpg")),
-        (self_exe, PathBuf::from("/usr/bin/git-safe-gpg")),
+        (self_exe.clone(), PathBuf::from("/usr/bin/git-safe-gpg")),
+        (self_exe, PathBuf::from("/usr/bin/git-safe-sandbox")),
     ] {
         add_executable(&mut runtime, &from, &to)?;
     }
@@ -270,6 +271,11 @@ impl Policy {
         if !self.network {
             command.arg("--unshare-net");
         }
+        // Landlock paths must refer to the mounted runtime, not host paths.
+        let executable_paths: Vec<_> = runtime.files.iter()
+            .filter(|(source, _)| runtime.executables.contains(source))
+            .map(|(_, target)| target.clone())
+            .collect();
         let mut files = runtime.files;
         files.sort();
         files.dedup();
@@ -303,18 +309,28 @@ impl Policy {
         for (name, value) in clean_environment() {
             command.args(["--setenv", name, value]);
         }
-        command.args(["--chdir", "/", "--", "/usr/bin/git"]);
-        let mut executable_paths = runtime.executables;
-        executable_paths.push(bwrap);
-        // Run before exec: failure to install limits or execution policy aborts spawn.
+        command.args(["--chdir", "/", "--", "/usr/bin/git-safe-sandbox"]);
+        command.args(executable_paths).arg("--");
+        // Landlock forbids mount operations, so it must be installed by the
+        // trusted launcher AFTER Bubblewrap has finished creating the sandbox.
         unsafe {
-            command.pre_exec(move || {
-                limits()?;
-                restrict_execution(&executable_paths)
-            });
+            command.pre_exec(limits);
         }
         Ok(command)
     }
+}
+
+#[cfg(target_os = "linux")]
+pub fn run_restricted(args: &[OsString]) -> ! {
+    use std::os::unix::process::CommandExt;
+    let Some(separator) = args.iter().position(|arg| arg == "--") else {
+        crate::real::die("invalid sandbox launcher arguments");
+    };
+    let paths: Vec<_> = args[..separator].iter().map(PathBuf::from).collect();
+    restrict_execution(&paths)
+        .unwrap_or_else(|err| crate::real::die(&format!("cannot restrict sandbox execution: {err}")));
+    let err = Command::new("/usr/bin/git").args(&args[separator + 1..]).exec();
+    crate::real::die(&format!("cannot execute sandboxed Git: {err}"));
 }
 fn clean_environment() -> [(&'static str, &'static str); 12] {
     [
