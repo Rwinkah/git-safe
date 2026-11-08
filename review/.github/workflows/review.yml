@@ -1,0 +1,100 @@
+name: review
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: Repository to review, as owner/name
+        required: true
+        type: string
+      sha:
+        description: Commit that was scanned, 40 or 64 hex characters
+        required: true
+        type: string
+      branch:
+        description: Branch that must still point at that commit
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the review workflow
+        uses: actions/checkout@v4
+
+      - name: Validate inputs
+        env:
+          REPOSITORY: ${{ inputs.repository }}
+          SHA: ${{ inputs.sha }}
+          BRANCH: ${{ inputs.branch }}
+        run: |
+          set -euo pipefail
+          [[ "$REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
+          [[ "$SHA" =~ ^[0-9a-fA-F]{40}$ || "$SHA" =~ ^[0-9a-fA-F]{64}$ ]]
+          [[ "$BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]]
+          [[ "$BRANCH" != *".."* ]]
+
+      - name: Install scanners
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz" \
+            | tar -xz -C "$HOME/.local/bin" gitleaks
+          pip install --user pip-audit poetry pipenv pdm
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          cargo install cargo-audit --locked
+
+      - name: Fetch the exact commit
+        env:
+          REPOSITORY: ${{ inputs.repository }}
+          SHA: ${{ inputs.sha }}
+          BRANCH: ${{ inputs.branch }}
+          TOKEN: ${{ secrets.REVIEW_PUSH_TOKEN }}
+        run: |
+          set -euo pipefail
+          git init target
+          git -C target remote add origin "https://github.com/${REPOSITORY}.git"
+          git -C target config http.extraheader "AUTHORIZATION: bearer ${TOKEN}"
+          git -C target fetch --no-tags origin "refs/heads/${BRANCH}:refs/heads/${BRANCH}"
+          test "$(git -C target rev-parse "$BRANCH")" = "$SHA"
+          git -C target checkout --detach "$SHA"
+
+      - name: Scan
+        id: scan
+        run: |
+          set -euo pipefail
+          scanners="$(bash scan.sh target)"
+          {
+            echo "scanners<<EOF"
+            printf '%s\n' "$scanners"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Sign the scanned commit
+        env:
+          REPOSITORY: ${{ inputs.repository }}
+          SHA: ${{ inputs.sha }}
+          BRANCH: ${{ inputs.branch }}
+          TOKEN: ${{ secrets.REVIEW_PUSH_TOKEN }}
+          REVIEW_GPG_PRIVATE_KEY: ${{ secrets.REVIEW_GPG_PRIVATE_KEY }}
+          SCANNERS: ${{ steps.scan.outputs.scanners }}
+        run: |
+          set -euo pipefail
+          gpg --batch --import <<< "$REVIEW_GPG_PRIVATE_KEY"
+          fpr="$(gpg --with-colons --list-secret-keys | awk -F: '/^fpr:/ { print $10; exit }')"
+          git -C target fetch --no-tags origin "refs/heads/${BRANCH}"
+          test "$(git -C target rev-parse FETCH_HEAD)" = "$SHA"
+          test "$(git -C target rev-parse HEAD)" = "$SHA"
+          message="$(printf 'git-safe review\n\nScanned commit: %s\nScanners:\n%s\n' "$SHA" "$SCANNERS")"
+          git -C target \
+            -c user.name='git-safe review' \
+            -c user.email='git-safe-review@users.noreply.github.com' \
+            -c user.signingkey="$fpr" \
+            -c commit.gpgsign=true \
+            -c gpg.program=gpg \
+            commit --allow-empty -m "$message"
+          git -C target push origin "HEAD:refs/heads/${BRANCH}"

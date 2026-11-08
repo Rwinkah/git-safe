@@ -1,0 +1,28 @@
+#!/bin/bash
+set -euo pipefail
+
+case "${1:-}" in
+  remove|purge) ;;
+  *) exit 0 ;;
+esac
+
+dest=/usr/lib/git-safe
+if [[ -x "$dest/git.real" ]]; then
+  current="$("$dest/git.real" config --system --get core.hooksPath || true)"
+  if [[ "$current" == "$dest/hooks" ]]; then
+    "$dest/git.real" config --system --unset core.hooksPath || true
+  fi
+fi
+
+undivert() {
+  local path="$1" new="$2"
+  if dpkg-divert --list "$path" | grep -F -q "$new"; then
+    rm -f "$path"
+    dpkg-divert --local --rename --remove "$path"
+  fi
+}
+
+undivert /usr/bin/git "$dest/git.real"
+for name in git-fetch git-clone git-pull git-fetch-pack git-archive git-maintenance git-remote git-http-fetch; do
+  undivert "/usr/lib/git-core/$name" "$dest/diverted/$name"
+done

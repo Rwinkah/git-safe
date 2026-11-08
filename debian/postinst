@@ -1,0 +1,69 @@
+#!/bin/bash
+set -euo pipefail
+
+if [[ "${1:-}" != "configure" ]]; then
+  exit 0
+fi
+
+dest=/usr/lib/git-safe
+install -d -m 755 "$dest/hooks" "$dest/diverted"
+
+migrate() {
+  local path="$1" old="$2" new="$3"
+  if dpkg-divert --list "$path" | grep -F -q "$old"; then
+    rm -f "$path"
+    dpkg-divert --local --rename --remove "$path"
+  fi
+  if ! dpkg-divert --list "$path" | grep -F -q "$new"; then
+    install -d -m 755 "$(dirname "$new")"
+    dpkg-divert --local --rename --divert "$new" --add "$path"
+  fi
+}
+
+migrate /usr/bin/git /usr/local/lib/git-safe/git.real "$dest/git.real"
+ln -sfn /usr/bin/git-safe /usr/bin/git
+
+helpers=(
+  git-fetch git-clone git-pull git-fetch-pack
+  git-archive git-maintenance git-remote git-http-fetch
+)
+for name in "${helpers[@]}"; do
+  path="/usr/lib/git-core/$name"
+  listed="$(dpkg-divert --list "$path" || true)"
+  if [[ ! -e "$path" && ! -e "/usr/local/lib/git-safe/diverted/$name" && ! -e "$dest/diverted/$name" && -z "$listed" ]]; then
+    continue
+  fi
+  migrate "$path" "/usr/local/lib/git-safe/diverted/$name" "$dest/diverted/$name"
+  cat > "$path" << EOF
+#!/bin/bash
+exec /usr/bin/git-safe ${name#git-} "\$@"
+EOF
+  chmod 755 "$path"
+done
+
+hook_names=(
+  reference-transaction
+  applypatch-msg pre-applypatch post-applypatch pre-commit pre-merge-commit
+  prepare-commit-msg commit-msg post-commit pre-rebase post-checkout post-merge
+  pre-push pre-receive update proc-receive post-receive post-update
+  push-to-checkout pre-auto-gc post-rewrite sendemail-validate fsmonitor-watchman
+  post-index-change
+)
+for name in "${hook_names[@]}"; do
+  ln -sfn /usr/bin/git-safe "$dest/hooks/$name"
+done
+
+if [[ ! -x "$dest/git.real" ]]; then
+  echo "git-safe: real git binary missing after divert" >&2
+  exit 1
+fi
+
+"$dest/git.real" config --system core.hooksPath "$dest/hooks"
+
+if [[ -d /usr/local/lib/git-safe && ! -e /usr/local/lib/git-safe/git.real ]]; then
+  rm -rf /usr/local/lib/git-safe
+fi
+rm -f /usr/local/bin/git-safe
+
+# Trust is now explicitly managed in each user's SQLite store. Never seed it
+# from the legacy package review key (including during upgrades).

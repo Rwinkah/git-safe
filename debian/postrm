@@ -1,0 +1,6 @@
+#!/bin/bash
+set -euo pipefail
+
+if [[ "${1:-}" == "purge" ]]; then
+  rm -rf /usr/lib/git-safe
+fi

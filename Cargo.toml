@@ -1,0 +1,27 @@
+[package]
+name = "git-safe"
+version = "0.2.0"
+edition = "2021"
+description = "Quarantine git downloads until every new commit is a trusted fast-forward"
+license = "MIT"
+authors = ["rwinkah <iwinosaokah@gmail.com>"]
+
+[dependencies]
+tempfile = "3"
+rusqlite = { version = "0.41.1", default-features = false, features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+getrandom = "0.3"
+subtle = "2"
+ctrlc = "3"
+libc = "0.2"
+
+[package.metadata.deb]
+maintainer = "rwinkah <iwinosaokah@gmail.com>"
+depends = "git, gpg, tor, bubblewrap"
+section = "vcs"
+priority = "optional"
+maintainer-scripts = "debian"
+assets = [
+    ["target/release/git-safe", "usr/bin/", "755"],
+]
